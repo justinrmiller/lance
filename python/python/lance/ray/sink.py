@@ -1,8 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright The Lance Authors
 
-import pickle
-from itertools import chain
 from typing import (
     TYPE_CHECKING,
     Any,
@@ -17,7 +15,8 @@ from typing import (
     Union,
 )
 
-from lance import schema
+import numpy as np
+
 import pyarrow as pa
 
 import lance
@@ -248,7 +247,7 @@ def _write_fragment(
         data_storage_version=data_storage_version,
         storage_options=storage_options,
     )
-    return [(pickle.dumps(fragment), pickle.dumps(schema)) for fragment in fragments]
+    return [(fragment, schema) for fragment in fragments]
 
 class _BaseLanceDatasink(ray.data.datasource.datasink.Datasink):
     """Base Lance Ray Datasink."""
@@ -308,25 +307,23 @@ class _BaseLanceDatasink(ray.data.datasource.datasink.Datasink):
         
         try:
             if is_new_interface:
-                # New format: write_returns is List[List[Tuple[str, str]]]
+                # New format: write_returns is List[List[Tuple[FragmentMetadata, pa.Schema]]]
                 for write_return in write_returns:
                     if write_return:  # Check if not None/empty
                         for item in write_return:
                             if isinstance(item, tuple) and len(item) == 2:
-                                fragment_str, schema_str = item
-                                fragment = pickle.loads(fragment_str)
+                                fragment, schema_obj = item
                                 fragments.append(fragment)
-                                schema = pickle.loads(schema_str)
+                                schema = schema_obj
             else:
                 # Old format: nested lists
                 for batch in write_returns:
                     if batch:  # Check if not None/empty
                         for item in batch:
                             if isinstance(item, tuple) and len(item) == 2:
-                                fragment_str, schema_str = item
-                                fragment = pickle.loads(fragment_str)
+                                fragment, schema_obj = item
                                 fragments.append(fragment)
-                                schema = pickle.loads(schema_str)
+                                schema = schema_obj
         except Exception as e:
             warnings.warn(
                 f"Failed to process write results: {e}. "
@@ -540,19 +537,13 @@ class LanceFragmentWriter:
         
         # Handle empty results
         if not fragments:
-            return pa.Table.from_pydict({
-                "fragment": [],
-                "schema": [],
-            })
+            return {"fragment": np.array([]), "schema": np.array([])}
+        # Serialize objects for Ray compatibility
+        return {
+            "fragment": np.array([fragment for fragment, _ in fragments], dtype=object),
+            "schema": np.array([schema for _, schema in fragments], dtype=object),
+        }
         
-        return pa.Table.from_pydict(
-            {
-                "fragment": [fragment for fragment, _ in fragments],
-                "schema": [schema for _, schema in fragments],
-            }
-        )
-
-
 class LanceCommitter(_BaseLanceDatasink):
     """Lance Committer as Ray Datasink.
 
@@ -575,16 +566,20 @@ class LanceCommitter(_BaseLanceDatasink):
         """Passthrough the fragments to commit phase"""
         v = []
         for block in blocks:
-            # If block is empty, skip to get "fragment" and "schema" filed
-            if len(block) == 0:
+            # If block is a dict (batch_format="default")
+            if isinstance(block, dict):
+                results = block.get("results", [])
+                for item in results:
+                    v.append((item["fragment"], item["schema"]))
+            # If block is a PyArrow Table (sometimes Ray may pass this)
+            elif isinstance(block, pa.Table):
+                if "results" in block.schema.names:
+                    # Each row is a dict: {"fragment": ..., "schema": ...}
+                    for item in block["results"].to_pylist():
+                        v.append((item["fragment"], item["schema"]))
+            else:
                 continue
-
-            for fragment, schema in zip(
-                block["fragment"].to_pylist(), block["schema"].to_pylist()
-            ):
-                v.append((fragment, schema))
         return v
-
 
 def write_lance(
     data: ray.data.Dataset,
@@ -642,7 +637,6 @@ def write_lance(
             output_uri, schema=schema, mode=mode, storage_options=storage_options
         )
     )
-
 
 def _register_hooks():
     """Register lance hook to Ray for better integration.
