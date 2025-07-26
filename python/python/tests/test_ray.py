@@ -8,6 +8,8 @@ import pandas as pd
 import pyarrow as pa
 import pytest
 
+import warnings
+
 ray = pytest.importorskip("ray")
 
 from lance.ray.fragment_api import add_columns  # noqa: E402
@@ -20,6 +22,9 @@ from lance.ray.sink import (  # noqa: E402
 
 # Use this hook until we have official DataSink in Ray.
 _register_hooks()
+
+warnings.filterwarnings("ignore", message=".*use_push_based_shuffle.*", category=DeprecationWarning)
+warnings.filterwarnings("ignore", message=".*write_file_retry_on_errors.*", category=DeprecationWarning)
 
 ray.init(ignore_reinit_error=True)
 

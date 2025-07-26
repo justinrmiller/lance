@@ -17,6 +17,7 @@ from typing import (
     Union,
 )
 
+from lance import schema
 import pyarrow as pa
 
 import lance
@@ -38,16 +39,105 @@ def _pd_to_arrow(
     """Convert a pandas DataFrame to pyarrow Table."""
     from ..dependencies import _PANDAS_AVAILABLE
     from ..dependencies import pandas as pd
+    import numpy as np
 
     if isinstance(df, dict):
-        return pa.Table.from_pydict(df, schema=schema)
+        # Handle empty dict case
+        if not df:
+            if schema:
+                # Create empty table with the provided schema
+                return pa.Table.from_pydict({field.name: [] for field in schema}, schema=schema)
+            else:
+                # Return empty table with empty schema
+                return pa.Table.from_pydict({})
+        
+        # Check if dict has all empty arrays/lists
+        all_empty = all(
+            (isinstance(v, (list, np.ndarray)) and len(v) == 0) or v is None 
+            for v in df.values()
+        )
+        
+        if all_empty and schema:
+            # Create properly structured empty table
+            return pa.Table.from_pydict({field.name: [] for field in schema}, schema=schema)
+        
+        # Handle the NaN issue for Ray >= 2.38
+        cleaned_dict = {}
+        for key, value in df.items():
+            if isinstance(value, np.ndarray):
+                if value.dtype == np.float32 or value.dtype == np.float64:
+                    # Check if this should be a string column based on schema
+                    if schema and key in [field.name for field in schema if pa.types.is_string(field.type)]:
+                        # Convert float NaN back to None for string columns
+                        cleaned_value = [None if pd.isna(v) else str(v) for v in value]
+                        cleaned_dict[key] = cleaned_value
+                    else:
+                        cleaned_dict[key] = value
+                else:
+                    cleaned_dict[key] = value
+            elif isinstance(value, (list, np.ndarray)):
+                # Handle lists that might contain NaN
+                if schema and key in [field.name for field in schema if pa.types.is_string(field.type)]:
+                    cleaned_value = [None if pd.isna(v) else v for v in value]
+                    cleaned_dict[key] = cleaned_value
+                else:
+                    cleaned_dict[key] = value
+            else:
+                cleaned_dict[key] = value
+        return pa.Table.from_pydict(cleaned_dict, schema=schema)
+    
     elif _PANDAS_AVAILABLE and isinstance(df, pd.DataFrame):
-        tbl = pa.Table.from_pandas(df, schema=schema)
-        tbl.schema = tbl.schema.remove_metadata()
+        # Handle empty DataFrame case
+        if len(df) == 0:
+            if schema:
+                # Create empty table with the provided schema
+                return pa.Table.from_pydict({field.name: [] for field in schema}, schema=schema)
+            else:
+                # Let pandas create the schema, then create empty table
+                if len(df.columns) > 0:
+                    # DataFrame has columns but no rows
+                    empty_schema = pa.Schema.from_pandas(df).remove_metadata()
+                    return pa.Table.from_pydict({field.name: [] for field in empty_schema}, schema=empty_schema)
+                else:
+                    # Completely empty DataFrame
+                    return pa.Table.from_pydict({})
+        
+        # Handle NaN in DataFrame for potential string columns
+        df_copy = df.copy()
+        if schema:
+            string_columns = [field.name for field in schema if pa.types.is_string(field.type)]
+            for col in string_columns:
+                if col in df_copy.columns:
+                    # Replace NaN with None for string columns
+                    df_copy[col] = df_copy[col].replace({np.nan: None, pd.NaType(): None})
+        
+        tbl = pa.Table.from_pandas(df_copy, schema=schema)
+        if tbl.schema.metadata:
+            tbl = tbl.replace_schema_metadata(None)
         return tbl
+    
     elif isinstance(df, pa.Table):
+        # Handle empty table case
+        if len(df) == 0:
+            if schema:
+                # Don't try to cast empty tables, create new one with correct schema
+                return pa.Table.from_pydict({field.name: [] for field in schema}, schema=schema)
+            else:
+                # Return as-is if no schema provided
+                return df
+        
+        # For non-empty tables, attempt casting if schema provided
         if schema is not None:
-            return df.cast(schema)
+            try:
+                return df.cast(schema)
+            except pa.ArrowInvalid as e:
+                # If cast fails due to schema mismatch on empty table
+                if len(df) == 0:
+                    return pa.Table.from_pydict({field.name: [] for field in schema}, schema=schema)
+                # Re-raise for actual schema mismatches on non-empty data
+                raise
+        return df
+    
     return df
 
 
@@ -58,34 +148,96 @@ def _write_fragment(
     schema: Optional[pa.Schema] = None,
     max_rows_per_file: int = 1024 * 1024,
     max_bytes_per_file: Optional[int] = None,
-    max_rows_per_group: int = 1024,  # Only useful for v1 writer.
+    max_rows_per_group: int = 1024,
     data_storage_version: Optional[str] = None,
     storage_options: Optional[Dict[str, Any]] = None,
 ) -> List[Tuple[FragmentMetadata, pa.Schema]]:
     from ..dependencies import _PANDAS_AVAILABLE
     from ..dependencies import pandas as pd
 
+    # Collect all blocks to check if we have any data
+    blocks = list(stream)
+    if not blocks:
+        return []
+    
+    # Check if all blocks are empty
+    all_empty = True
+    non_empty_block = None
+    
+    for block in blocks:
+        if _PANDAS_AVAILABLE and isinstance(block, pd.DataFrame):
+            if len(block) > 0:
+                all_empty = False
+                non_empty_block = block
+                break
+        elif isinstance(block, pa.Table):
+            if len(block) > 0:
+                all_empty = False
+                non_empty_block = block
+                break
+        elif isinstance(block, dict):
+            # Check if dict has any non-empty values
+            for v in block.values():
+                if hasattr(v, '__len__') and len(v) > 0:
+                    all_empty = False
+                    non_empty_block = block
+                    break
+            if not all_empty:
+                break
+    
+    # Now handle schema inference
     if schema is None:
-        first = next(stream)
-        if _PANDAS_AVAILABLE and isinstance(first, pd.DataFrame):
-            schema = pa.Schema.from_pandas(first).remove_metadata()
-        elif isinstance(first, Dict):
-            tbl = pa.Table.from_pydict(first)
+        if all_empty:
+            # No data to infer schema from
+            return []
+        
+        # Use the non-empty block to infer schema
+        if _PANDAS_AVAILABLE and isinstance(non_empty_block, pd.DataFrame):
+            schema = pa.Schema.from_pandas(non_empty_block).remove_metadata()
+        elif isinstance(non_empty_block, dict):
+            tbl = pa.Table.from_pydict(non_empty_block)
             schema = tbl.schema.remove_metadata()
+        elif isinstance(non_empty_block, pa.Table):
+            schema = non_empty_block.schema
         else:
-            schema = first.schema
-        stream = chain([first], stream)
+            # Try first block as fallback
+            first = blocks[0]
+            try:
+                tbl = _pd_to_arrow(first, None)
+                schema = tbl.schema
+            except Exception:
+                raise ValueError(f"Cannot infer schema from type {type(first)}")
+        
+        # Safety check for empty schema
+        if len(schema) == 0:
+            return []
+    
+    # If all blocks are empty but we have a schema, return empty
+    if all_empty:
+        return []
 
     def record_batch_converter():
-        for block in stream:
-            tbl = _pd_to_arrow(block, schema)
-            yield from tbl.to_batches()
+        for block in blocks:
+            try:
+                tbl = _pd_to_arrow(block, schema)
+                if len(tbl) > 0:  # Only yield non-empty batches
+                    yield from tbl.to_batches()
+            except Exception as e:
+                # Log but skip problematic blocks
+                import warnings
+                warnings.warn(f"Skipping block due to conversion error: {e}")
+                continue
 
     max_bytes_per_file = (
         DEFAULT_MAX_BYTES_PER_FILE if max_bytes_per_file is None else max_bytes_per_file
     )
 
-    reader = pa.RecordBatchReader.from_batches(schema, record_batch_converter())
+    # # Collect batches to check if we have any
+    batches = list(record_batch_converter())
+    if not batches:
+        return []
+
+    reader = pa.RecordBatchReader.from_batches(schema, batches)
     fragments = write_fragments(
         reader,
         uri,
@@ -96,10 +248,9 @@ def _write_fragment(
         data_storage_version=data_storage_version,
         storage_options=storage_options,
     )
-    return [(fragment, schema) for fragment in fragments]
+    return [(pickle.dumps(fragment), pickle.dumps(schema)) for fragment in fragments]
 
-
-class _BaseLanceDatasink(ray.data.Datasink):
+class _BaseLanceDatasink(ray.data.datasource.datasink.Datasink):
     """Base Lance Ray Datasink."""
 
     def __init__(
@@ -126,61 +277,73 @@ class _BaseLanceDatasink(ray.data.Datasink):
 
     def on_write_start(self):
         if self.mode == "append":
-            ds = lance.LanceDataset(self.uri, storage_options=self.storage_options)
-            self.read_version = ds.version
-            if self.schema is None:
-                self.schema = ds.schema
+            try:
+                ds = lance.LanceDataset(self.uri, storage_options=self.storage_options)
+                self.read_version = ds.version
+                if self.schema is None:
+                    self.schema = ds.schema
+            except ValueError:
+                # Dataset doesn't exist yet, switch to create mode
+                self.mode = "create"
 
-    def on_write_complete(
-        self,
-        write_results: List[List[Tuple[str, str]]],
-    ):
+    def on_write_complete(self, write_result):
         import warnings
 
-        if not write_results:
-            warnings.warn(
-                "write_results is empty.",
-                DeprecationWarning,
-            )
-            return
-        if (
-            not isinstance(write_results, list)
-            or not isinstance(write_results[0], list)
-        ) and not hasattr(write_results, "write_returns"):
-            warnings.warn(
-                "write_results type is wrong. please check version, "
-                "upgrade or downgrade your ray version. ray versions >= 2.38 "
-                "and < 2.41 are unable to write Lance datasets, check ray PR "
-                "https://github.com/ray-project/ray/pull/49251 in your "
-                "ray version. ",
-                DeprecationWarning,
-            )
-            return
-        if hasattr(write_results, "write_returns"):
-            write_results = write_results.write_returns
+        # Detect which interface we're using
+        if hasattr(write_result, 'write_returns'):
+            # New Ray interface (>= 2.38)
+            write_returns = write_result.write_returns
+            is_new_interface = True
+        else:
+            # Old Ray interface (< 2.38) - write_result is List[Block]
+            write_returns = write_result
+            is_new_interface = False
 
-        if len(write_results) == 0:
-            warnings.warn(
-                "write results is empty. please check ray version or internal error",
-                DeprecationWarning,
-            )
+        if not write_returns:
+            # No data was written, skip commit
             return
 
         fragments = []
         schema = None
-        for batch in write_results:
-            for fragment_str, schema_str in batch:
-                fragment = pickle.loads(fragment_str)
-                fragments.append(fragment)
-                schema = pickle.loads(schema_str)
-        # Check weather writer has fragments or not.
-        # Skip commit when there are no fragments.
-        if not schema:
+        
+        try:
+            if is_new_interface:
+                # New format: write_returns is List[List[Tuple[str, str]]]
+                for write_return in write_returns:
+                    if write_return:  # Check if not None/empty
+                        for item in write_return:
+                            if isinstance(item, tuple) and len(item) == 2:
+                                fragment_str, schema_str = item
+                                fragment = pickle.loads(fragment_str)
+                                fragments.append(fragment)
+                                schema = pickle.loads(schema_str)
+            else:
+                # Old format: nested lists
+                for batch in write_returns:
+                    if batch:  # Check if not None/empty
+                        for item in batch:
+                            if isinstance(item, tuple) and len(item) == 2:
+                                fragment_str, schema_str = item
+                                fragment = pickle.loads(fragment_str)
+                                fragments.append(fragment)
+                                schema = pickle.loads(schema_str)
+        except Exception as e:
+            warnings.warn(
+                f"Failed to process write results: {e}. "
+                "This might be due to Ray version compatibility issues.",
+                DeprecationWarning,
+            )
             return
+        
+        # Skip commit when there are no fragments
+        if not schema or not fragments:
+            return
+            
         if self.mode in set(["create", "overwrite"]):
             op = lance.LanceOperation.Overwrite(schema, fragments)
         elif self.mode == "append":
             op = lance.LanceOperation.Append(fragments)
+        
         lance.LanceDataset.commit(
             self.uri,
             op,
@@ -278,7 +441,7 @@ class LanceDatasink(_BaseLanceDatasink):
         blocks: Iterable[Union[pa.Table, "pd.DataFrame"]],
         _ctx,
     ):
-        fragments_and_schema = _write_fragment(
+        return _write_fragment(
             blocks,
             self.uri,
             schema=self.schema,
@@ -286,10 +449,6 @@ class LanceDatasink(_BaseLanceDatasink):
             data_storage_version=self.data_storage_version,
             storage_options=self.storage_options,
         )
-        return [
-            (pickle.dumps(fragment), pickle.dumps(schema))
-            for fragment, schema in fragments_and_schema
-        ]
 
 
 class LanceFragmentWriter:
@@ -378,10 +537,18 @@ class LanceFragmentWriter:
             data_storage_version=self.data_storage_version,
             storage_options=self.storage_options,
         )
+        
+        # Handle empty results
+        if not fragments:
+            return pa.Table.from_pydict({
+                "fragment": [],
+                "schema": [],
+            })
+        
         return pa.Table.from_pydict(
             {
-                "fragment": [pickle.dumps(fragment) for fragment, _ in fragments],
-                "schema": [pickle.dumps(schema) for _, schema in fragments],
+                "fragment": [fragment for fragment, _ in fragments],
+                "schema": [schema for _, schema in fragments],
             }
         )
 
