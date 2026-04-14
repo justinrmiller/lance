@@ -106,6 +106,19 @@ mod kernel {
 }
 
 impl Cosine for f16 {
+    #[cfg(feature = "numkong")]
+    #[inline]
+    fn cosine(x: &[Self], other: &[Self]) -> f32 {
+        // SAFETY: half::f16 and numkong::f16 are both #[repr(transparent)]
+        // wrappers around u16 with identical layout.
+        let x_nk =
+            unsafe { std::slice::from_raw_parts(x.as_ptr() as *const numkong::f16, x.len()) };
+        let y_nk = unsafe {
+            std::slice::from_raw_parts(other.as_ptr() as *const numkong::f16, other.len())
+        };
+        <numkong::f16 as numkong::Angular>::angular(x_nk, y_nk).unwrap_or(0.0)
+    }
+
     fn cosine_fast(x: &[Self], x_norm: f32, y: &[Self]) -> f32 {
         match *SIMD_SUPPORT {
             #[cfg(all(feature = "fp16kernels", target_arch = "aarch64"))]
