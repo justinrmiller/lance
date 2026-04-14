@@ -107,23 +107,39 @@ fn bench_distance(c: &mut Criterion) {
         });
     });
 
-    // u8 dot product benchmark (SQ distance path)
+    // u8 dot product benchmarks: scalar baseline vs SIMD dispatch
     {
-        const U8_DIMENSION: usize = 1024;
-        const U8_TOTAL: usize = 1024 * 1024;
-        let mut rng = rand::rng();
-        let key_u8: Vec<u8> = (0..U8_DIMENSION).map(|_| rng.random()).collect();
-        let target_u8: Vec<u8> = (0..U8_TOTAL * U8_DIMENSION).map(|_| rng.random()).collect();
-        c.bench_function("Dot(u8, dispatch)", |b| {
-            b.iter(|| {
-                black_box(
-                    target_u8
-                        .chunks(U8_DIMENSION)
-                        .map(|y| dot_distance(key_u8.as_slice(), y))
-                        .collect::<Vec<_>>(),
-                )
+        use lance_linalg::distance::dot_u8::{dot_u8, dot_u8_scalar};
+
+        for &dim in &[128, 256, 512, 1024] {
+            let num_vectors = 1024 * 1024 / dim; // ~1M elements total
+            let mut rng = rand::rng();
+            let key_u8: Vec<u8> = (0..dim).map(|_| rng.random()).collect();
+            let target_u8: Vec<u8> =
+                (0..num_vectors * dim).map(|_| rng.random()).collect();
+
+            c.bench_function(&format!("Dot(u8, scalar, dim={dim})"), |b| {
+                b.iter(|| {
+                    black_box(
+                        target_u8
+                            .chunks(dim)
+                            .map(|y| dot_u8_scalar(key_u8.as_slice(), y))
+                            .collect::<Vec<_>>(),
+                    )
+                });
             });
-        });
+
+            c.bench_function(&format!("Dot(u8, dispatch, dim={dim})"), |b| {
+                b.iter(|| {
+                    black_box(
+                        target_u8
+                            .chunks(dim)
+                            .map(|y| dot_u8(key_u8.as_slice(), y))
+                            .collect::<Vec<_>>(),
+                    )
+                });
+            });
+        }
     }
 
     run_bench::<Float32Type>(c);
