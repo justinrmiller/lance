@@ -27,6 +27,7 @@ use crate::Result;
 // The following code has been tuned for auto-vectorization.
 // Please make sure run `cargo bench --bench dot` with and without AVX-512 before any change.
 // Tested `target-features`: avx512f,avx512vl,f16c
+#[cfg_attr(feature = "numkong", allow(dead_code))]
 #[inline]
 fn dot_scalar<
     T: AsPrimitive<Output>,
