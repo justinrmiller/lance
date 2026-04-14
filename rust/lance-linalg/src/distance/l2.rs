@@ -100,8 +100,20 @@ impl L2 for u8 {
 impl L2 for bf16 {
     #[inline]
     fn l2(x: &[Self], y: &[Self]) -> f32 {
-        // TODO: add SIMD support
-        l2_scalar::<Self, f32, 16>(x, y)
+        #[cfg(feature = "numkong")]
+        {
+            // SAFETY: half::bf16 and numkong::bf16 are both #[repr(transparent)]
+            // wrappers around u16 with identical layout.
+            let x_nk =
+                unsafe { std::slice::from_raw_parts(x.as_ptr() as *const numkong::bf16, x.len()) };
+            let y_nk =
+                unsafe { std::slice::from_raw_parts(y.as_ptr() as *const numkong::bf16, y.len()) };
+            <numkong::bf16 as numkong::Euclidean>::sqeuclidean(x_nk, y_nk).unwrap_or(0.0)
+        }
+        #[cfg(not(feature = "numkong"))]
+        {
+            l2_scalar::<Self, f32, 16>(x, y)
+        }
     }
 }
 
@@ -161,16 +173,30 @@ impl L2 for f16 {
 impl L2 for f32 {
     #[inline]
     fn l2(x: &[Self], y: &[Self]) -> f32 {
-        // 16 = 512 (avx512) / 8 bits / 4 (sizeof(f32))
-        // See https://github.com/lance-format/lance/pull/2450.
-        l2_scalar::<Self, Self, 16>(x, y)
+        #[cfg(all(feature = "numkong", target_arch = "x86_64"))]
+        {
+            <Self as numkong::Euclidean>::sqeuclidean(x, y).unwrap_or(0.0) as Self
+        }
+        #[cfg(not(all(feature = "numkong", target_arch = "x86_64")))]
+        {
+            // 16 = 512 (avx512) / 8 bits / 4 (sizeof(f32))
+            // See https://github.com/lance-format/lance/pull/2450.
+            l2_scalar::<Self, Self, 16>(x, y)
+        }
     }
 }
 
 impl L2 for f64 {
     #[inline]
     fn l2(x: &[Self], y: &[Self]) -> f32 {
-        l2_scalar::<Self, Self, 8>(x, y) as f32
+        #[cfg(all(feature = "numkong", target_arch = "x86_64"))]
+        {
+            <Self as numkong::Euclidean>::sqeuclidean(x, y).unwrap_or(0.0) as f32
+        }
+        #[cfg(not(all(feature = "numkong", target_arch = "x86_64")))]
+        {
+            l2_scalar::<Self, Self, 8>(x, y) as f32
+        }
     }
 }
 

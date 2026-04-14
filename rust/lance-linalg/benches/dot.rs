@@ -122,6 +122,65 @@ fn bench_distance(c: &mut Criterion) {
     });
 
     run_bench::<Float64Type>(c);
+
+    // NumKong direct benchmarks for A/B comparison in a single run.
+    #[cfg(feature = "numkong")]
+    {
+        use numkong::Dot as NkDot;
+
+        let key_f32 = generate_random_array_with_seed::<Float32Type>(DIMENSION, [0; 32]);
+        let target_f32 =
+            generate_random_array_with_seed::<Float32Type>(TOTAL * DIMENSION, [42; 32]);
+        c.bench_function("Dot(f32, numkong-direct)", |b| {
+            let x = key_f32.as_slice();
+            b.iter(|| {
+                black_box(
+                    target_f32
+                        .as_slice()
+                        .chunks(DIMENSION)
+                        .map(|y| <f32 as NkDot>::dot(x, y).unwrap_or(0.0) as f32)
+                        .collect::<Vec<_>>(),
+                )
+            });
+        });
+
+        let key_f64 = generate_random_array_with_seed::<Float64Type>(DIMENSION, [0; 32]);
+        let target_f64 =
+            generate_random_array_with_seed::<Float64Type>(TOTAL * DIMENSION, [42; 32]);
+        c.bench_function("Dot(f64, numkong-direct)", |b| {
+            let x = key_f64.as_slice();
+            b.iter(|| {
+                black_box(
+                    target_f64
+                        .as_slice()
+                        .chunks(DIMENSION)
+                        .map(|y| <f64 as NkDot>::dot(x, y).unwrap_or(0.0) as f32)
+                        .collect::<Vec<_>>(),
+                )
+            });
+        });
+
+        let mut rng = rand::rng();
+        let key_bf16: Vec<half::bf16> = repeat_with(|| rng.random::<u16>())
+            .map(half::bf16::from_bits)
+            .take(DIMENSION)
+            .collect();
+        let target_bf16: Vec<half::bf16> = repeat_with(|| rng.random::<u16>())
+            .map(half::bf16::from_bits)
+            .take(TOTAL * DIMENSION)
+            .collect();
+        c.bench_function("Dot(bf16, numkong-direct)", |b| {
+            let x = key_bf16.as_slice();
+            b.iter(|| {
+                black_box(
+                    target_bf16
+                        .chunks(DIMENSION)
+                        .map(|y| dot_distance(x, y))
+                        .collect::<Vec<_>>(),
+                )
+            });
+        });
+    }
 }
 
 fn bench_time() -> Duration {
