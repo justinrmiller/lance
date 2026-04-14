@@ -18,6 +18,7 @@ use arrow_schema::{ArrowError, DataType};
 
 pub mod cosine;
 pub mod dot;
+pub mod dot_u8;
 pub mod hamming;
 pub mod l2;
 pub mod norm_l2;

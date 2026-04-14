@@ -107,6 +107,25 @@ fn bench_distance(c: &mut Criterion) {
         });
     });
 
+    // u8 dot product benchmark (SQ distance path)
+    {
+        const U8_DIMENSION: usize = 1024;
+        const U8_TOTAL: usize = 1024 * 1024;
+        let mut rng = rand::rng();
+        let key_u8: Vec<u8> = (0..U8_DIMENSION).map(|_| rng.random()).collect();
+        let target_u8: Vec<u8> = (0..U8_TOTAL * U8_DIMENSION).map(|_| rng.random()).collect();
+        c.bench_function("Dot(u8, dispatch)", |b| {
+            b.iter(|| {
+                black_box(
+                    target_u8
+                        .chunks(U8_DIMENSION)
+                        .map(|y| dot_distance(key_u8.as_slice(), y))
+                        .collect::<Vec<_>>(),
+                )
+            });
+        });
+    }
+
     run_bench::<Float32Type>(c);
     c.bench_function("Dot(f32, SIMD)", |b| {
         let key = generate_random_array_with_seed::<Float32Type>(DIMENSION, [0; 32]);
