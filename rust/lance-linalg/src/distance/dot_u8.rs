@@ -29,7 +29,7 @@
 
 use std::sync::OnceLock;
 
-/// Portable scalar u8 dot product.
+/// Portable scalar u8 dot product, also used for SIMD tail elements.
 #[inline]
 pub fn dot_u8_scalar(a: &[u8], b: &[u8]) -> u32 {
     debug_assert_eq!(a.len(), b.len());
@@ -44,9 +44,8 @@ mod aarch64 {
     use std::arch::aarch64::*;
     use std::arch::asm;
 
-    /// NEON dotprod path (ARMv8.2-A+: Apple M1+, Graviton2+, Cortex-A76+).
-    /// Uses inline asm for UDOT since `vdotq_u32` is not yet stable in Rust.
-    /// 16 elements per iteration.
+    /// NEON dotprod path (Apple M1+, Graviton2+, Cortex-A76+).
+    /// Inline asm because `vdotq_u32` is not yet stable in std::arch.
     pub unsafe fn dot_u8_neon_dotprod(a: &[u8], b: &[u8]) -> u32 {
         debug_assert_eq!(a.len(), b.len());
         let n = a.len();
@@ -56,7 +55,6 @@ mod aarch64 {
         while i + 16 <= n {
             let av = vld1q_u8(a.as_ptr().add(i));
             let bv = vld1q_u8(b.as_ptr().add(i));
-            // UDOT Vd.4S, Vn.16B, Vm.16B — native unsigned dot product.
             asm!(
                 "udot {acc:v}.4s, {a:v}.16b, {b:v}.16b",
                 acc = inout(vreg) acc,
@@ -68,19 +66,15 @@ mod aarch64 {
         }
 
         let mut result = vaddvq_u32(acc);
-
-        // Scalar tail.
         while i < n {
             result += a[i] as u32 * b[i] as u32;
             i += 1;
         }
-
         result
     }
 
-    /// Base NEON path (all aarch64): widening multiply u8→u16 then
-    /// pairwise accumulate to u32. 16 elements per iteration.
-    /// Fallback when dotprod is not available.
+    /// Base NEON path: widening multiply u8→u16 then pairwise accumulate
+    /// to u32. Fallback when dotprod is not available.
     pub unsafe fn dot_u8_neon(a: &[u8], b: &[u8]) -> u32 {
         debug_assert_eq!(a.len(), b.len());
         let n = a.len();
@@ -90,26 +84,18 @@ mod aarch64 {
         while i + 16 <= n {
             let av = vld1q_u8(a.as_ptr().add(i));
             let bv = vld1q_u8(b.as_ptr().add(i));
-
-            // vmull: u8×u8 → u16 (8 elements per half)
             let prod_lo = vmull_u8(vget_low_u8(av), vget_low_u8(bv));
             let prod_hi = vmull_u8(vget_high_u8(av), vget_high_u8(bv));
-
-            // vpadalq: pairwise add u16 → u32 and accumulate.
             acc = vpadalq_u16(acc, prod_lo);
             acc = vpadalq_u16(acc, prod_hi);
-
             i += 16;
         }
 
         let mut result = vaddvq_u32(acc);
-
-        // Scalar tail.
         while i < n {
             result += a[i] as u32 * b[i] as u32;
             i += 1;
         }
-
         result
     }
 }
@@ -118,9 +104,7 @@ mod aarch64 {
 mod x86 {
     use std::arch::x86_64::*;
 
-    /// AVX2 path: zero-extend u8 → u16 via `_mm256_cvtepu8_epi16`, then
-    /// use `_mm256_madd_epi16` which treats inputs as i16 but produces
-    /// correct results for non-negative values. 32 elements per iteration.
+    /// AVX2 path: zero-extend u8→u16, then VPMADDWD. 32 elements/iter.
     #[target_feature(enable = "avx2")]
     pub unsafe fn dot_u8_avx2(a: &[u8], b: &[u8]) -> u32 {
         debug_assert_eq!(a.len(), b.len());
@@ -132,23 +116,18 @@ mod x86 {
             let av = _mm256_loadu_si256(a.as_ptr().add(i) as *const __m256i);
             let bv = _mm256_loadu_si256(b.as_ptr().add(i) as *const __m256i);
 
-            // Zero-extend low and high 128-bit halves to 16 × u16.
-            // Since all values are ≤ 255, they fit in i16 as positive,
-            // so VPMADDWD produces correct non-negative results.
+            // Zero-extend each 128-bit half to 16 × u16. Values ≤ 255 fit
+            // in i16 as positive, so VPMADDWD gives correct results.
             let a_lo = _mm256_cvtepu8_epi16(_mm256_castsi256_si128(av));
             let a_hi = _mm256_cvtepu8_epi16(_mm256_extracti128_si256(av, 1));
             let b_lo = _mm256_cvtepu8_epi16(_mm256_castsi256_si128(bv));
             let b_hi = _mm256_cvtepu8_epi16(_mm256_extracti128_si256(bv, 1));
 
-            // Each VPMADDWD produces 8 × i32 partial sums. All products
-            // are in [0, 255*255], so accumulation stays non-negative.
             acc = _mm256_add_epi32(acc, _mm256_madd_epi16(a_lo, b_lo));
             acc = _mm256_add_epi32(acc, _mm256_madd_epi16(a_hi, b_hi));
-
             i += 32;
         }
 
-        // Horizontal reduction of 8 × i32 → scalar.
         let lo128 = _mm256_castsi256_si128(acc);
         let hi128 = _mm256_extracti128_si256(acc, 1);
         let mut sum128 = _mm_add_epi32(lo128, hi128);
@@ -156,17 +135,18 @@ mod x86 {
         sum128 = _mm_hadd_epi32(sum128, sum128);
         let mut result = _mm_cvtsi128_si32(sum128) as u32;
 
-        // Scalar tail.
         while i < n {
             result += a[i] as u32 * b[i] as u32;
             i += 1;
         }
-
         result
     }
 
-    /// AVX-512 VNNI path (Ice Lake .. Emerald Rapids, Zen 4).
-    /// VPDPBUSD + XOR-0x80 bias trick, 64 elements per iteration.
+    /// AVX-512 VNNI path (Ice Lake+, Zen 4+). 64 elements/iter.
+    ///
+    /// VPDPBUSD expects (unsigned, signed) operands but SQ stores u8×u8.
+    /// We XOR b with 0x80 to map it to i8, then correct: result + 128·Σa.
+    /// The Σa term (VPSADBW, port 5) runs in parallel with VPDPBUSD (port 0).
     #[target_feature(enable = "avx512f,avx512bw,avx512vnni")]
     pub unsafe fn dot_u8_avx512_vnni(a: &[u8], b: &[u8]) -> u32 {
         debug_assert_eq!(a.len(), b.len());
@@ -176,39 +156,25 @@ mod x86 {
         let mut acc_suma = _mm512_setzero_si512();
         let sign_flip = _mm512_set1_epi8(0x80u8 as i8);
         let zeros = _mm512_setzero_si512();
-
         let mut i = 0usize;
 
         while i + 64 <= n {
             let av = _mm512_loadu_si512(a.as_ptr().add(i) as *const i32);
             let bv = _mm512_loadu_si512(b.as_ptr().add(i) as *const i32);
-
-            // Bias b into the signed domain: b' = b ⊕ 0x80 = b - 128 (reinterpreted).
             let b_biased = _mm512_xor_si512(bv, sign_flip);
-
-            // Port 0: VPDPBUSD(a unsigned, b_biased signed).
-            // Computes Σ a·(b − 128) = Σ a·b − 128·Σa per 4-byte group.
             acc_dot = _mm512_dpbusd_epi32(acc_dot, av, b_biased);
-
-            // Port 5 (parallel): Σa via VPSADBW(a, 0) = sum of bytes.
             acc_suma = _mm512_add_epi64(acc_suma, _mm512_sad_epu8(av, zeros));
-
             i += 64;
         }
 
-        // Horizontal reductions.
         let biased_dot = _mm512_reduce_add_epi32(acc_dot);
         let sum_a = _mm512_reduce_add_epi64(acc_suma);
-
-        // Correction: biased = Σ a·b − 128·Σa  ⟹  Σ a·b = biased + 128·Σa
         let mut result = (biased_dot as i64 + 128 * sum_a) as u32;
 
-        // Scalar tail (< 64 elements remaining).
         while i < n {
             result += a[i] as u32 * b[i] as u32;
             i += 1;
         }
-
         result
     }
 }
@@ -246,8 +212,7 @@ fn select_backend() -> DotU8Fn {
     dot_u8_scalar
 }
 
-/// Compute the dot product of two u8 slices, dispatching to the best
-/// available SIMD backend on the current CPU.
+/// Dispatched u8 dot product, selecting the best available SIMD backend.
 #[inline]
 pub fn dot_u8(a: &[u8], b: &[u8]) -> u32 {
     (DISPATCH.get_or_init(select_backend))(a, b)
@@ -257,7 +222,6 @@ pub fn dot_u8(a: &[u8], b: &[u8]) -> u32 {
 mod tests {
     use super::*;
 
-    /// Deterministic PRNG for reproducible failures.
     fn fill_random(buf: &mut [u8], seed: &mut u32) {
         for slot in buf.iter_mut() {
             *seed = seed.wrapping_mul(1103515245).wrapping_add(12345);
@@ -265,12 +229,10 @@ mod tests {
         }
     }
 
-    /// Sizes chosen to stress vector loop, scalar tail, and boundaries.
     const SIZES: &[usize] = &[
         0, 1, 7, 15, 16, 31, 32, 33, 63, 64, 65, 127, 128, 255, 256, 1024, 4096, 4097,
     ];
 
-    /// Run every available backend against the scalar reference.
     fn check_all_backends(a: &[u8], b: &[u8], case: &str) {
         let reference = dot_u8_scalar(a, b);
 
