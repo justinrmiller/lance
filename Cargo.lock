@@ -5114,7 +5114,6 @@ dependencies = [
  "lance-core",
  "lance-testing",
  "num-traits",
- "numkong",
  "pprof",
  "proptest",
  "rand 0.9.3",
@@ -6099,15 +6098,6 @@ name = "number_prefix"
 version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "830b246a0e5f20af87141b25c173cd1b609bd7779a4617d6ec582abaf90870f3"
-
-[[package]]
-name = "numkong"
-version = "7.5.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "07cc602a628a75a818919db290074d080f6d5a65c698f517f50603de9b44357e"
-dependencies = [
- "cc",
-]
 
 [[package]]
 name = "oauth2"

@@ -77,45 +77,6 @@ fn bench_distance(c: &mut Criterion) {
         })
     });
 
-    #[cfg(feature = "numkong")]
-    {
-        use numkong::Angular as NkAngular;
-
-        const DIMENSION: usize = 1024;
-        const TOTAL: usize = 1024 * 1024;
-
-        let key_f32 = generate_random_array_with_seed::<Float32Type>(DIMENSION, [0; 32]);
-        let target_f32 =
-            generate_random_array_with_seed::<Float32Type>(TOTAL * DIMENSION, [42; 32]);
-        c.bench_function("Cosine(f32, numkong-direct)", |b| {
-            let x = key_f32.as_slice();
-            b.iter(|| {
-                black_box(
-                    target_f32
-                        .as_slice()
-                        .chunks(DIMENSION)
-                        .map(|y| <f32 as NkAngular>::angular(x, y).unwrap_or(0.0) as f32)
-                        .collect::<Vec<_>>(),
-                )
-            });
-        });
-
-        let key_f64 = generate_random_array_with_seed::<Float64Type>(DIMENSION, [0; 32]);
-        let target_f64 =
-            generate_random_array_with_seed::<Float64Type>(TOTAL * DIMENSION, [42; 32]);
-        c.bench_function("Cosine(f64, numkong-direct)", |b| {
-            let x = key_f64.as_slice();
-            b.iter(|| {
-                black_box(
-                    target_f64
-                        .as_slice()
-                        .chunks(DIMENSION)
-                        .map(|y| <f64 as NkAngular>::angular(x, y).unwrap_or(0.0) as f32)
-                        .collect::<Vec<_>>(),
-                )
-            });
-        });
-    }
 }
 
 #[cfg(target_os = "linux")]

@@ -88,39 +88,6 @@ fn bench_distance(c: &mut Criterion) {
 
     run_bench::<Float64Type>(c);
 
-    #[cfg(feature = "numkong")]
-    {
-        use numkong::Euclidean as NkEuclidean;
-
-        c.bench_function("L2(f32, numkong-direct)", |b| {
-            let x = key.values();
-            b.iter(|| {
-                black_box(
-                    target
-                        .as_slice()
-                        .chunks(DIMENSION)
-                        .map(|y| <f32 as NkEuclidean>::sqeuclidean(x, y).unwrap_or(0.0) as f32)
-                        .fold(0.0, |acc: f32, v: f32| acc + v),
-                )
-            });
-        });
-
-        let key_f64 = generate_random_array_with_seed::<Float64Type>(DIMENSION, [0; 32]);
-        let target_f64 =
-            generate_random_array_with_seed::<Float64Type>(TOTAL * DIMENSION, [42; 32]);
-        c.bench_function("L2(f64, numkong-direct)", |b| {
-            let x = key_f64.as_slice();
-            b.iter(|| {
-                black_box(
-                    target_f64
-                        .as_slice()
-                        .chunks(DIMENSION)
-                        .map(|y| <f64 as NkEuclidean>::sqeuclidean(x, y).unwrap_or(0.0) as f32)
-                        .fold(0.0, |acc: f32, v: f32| acc + v),
-                )
-            });
-        });
-    }
 }
 
 fn bench_small_distance(c: &mut Criterion) {

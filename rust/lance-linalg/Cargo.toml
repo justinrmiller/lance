@@ -18,7 +18,6 @@ half = { workspace = true }
 lance-arrow = { workspace = true }
 lance-core = { workspace = true }
 num-traits = { workspace = true }
-numkong = { version = "7.5", optional = true }
 rand = { workspace = true }
 
 [dev-dependencies]
@@ -35,9 +34,6 @@ cc = "1.0.83"
 # This requires GCC 12 / Clang 6 or later. (To get AVX-512 support,
 # you need Clang 11 or later.)
 fp16kernels = []
-# Use NumKong's SIMD-accelerated kernels for f32/f64/bf16 distance
-# computations instead of LLVM auto-vectorized scalar code.
-numkong = ["dep:numkong"]
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]
 pprof = { workspace = true }
