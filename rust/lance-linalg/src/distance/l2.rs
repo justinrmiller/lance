@@ -18,9 +18,8 @@ use arrow_schema::DataType;
 use half::{bf16, f16};
 use lance_arrow::{ArrowFloatType, FixedSizeListArrayExt, FloatArray};
 use lance_core::assume_eq;
-#[cfg(not(feature = "numkong"))]
 use lance_core::utils::cpu::SIMD_SUPPORT;
-#[cfg(all(not(feature = "numkong"), feature = "fp16kernels"))]
+#[cfg(feature = "fp16kernels")]
 use lance_core::utils::cpu::SimdSupport;
 use num_traits::{AsPrimitive, Num};
 
@@ -141,45 +140,32 @@ mod kernel {
 impl L2 for f16 {
     #[inline]
     fn l2(x: &[Self], y: &[Self]) -> f32 {
-        #[cfg(feature = "numkong")]
-        {
-            // SAFETY: half::f16 and numkong::f16 are both #[repr(transparent)]
-            // wrappers around u16 with identical layout.
-            let x_nk =
-                unsafe { std::slice::from_raw_parts(x.as_ptr() as *const numkong::f16, x.len()) };
-            let y_nk =
-                unsafe { std::slice::from_raw_parts(y.as_ptr() as *const numkong::f16, y.len()) };
-            <numkong::f16 as numkong::Euclidean>::sqeuclidean(x_nk, y_nk).unwrap_or(0.0)
-        }
-        #[cfg(not(feature = "numkong"))]
-        {
-            match *SIMD_SUPPORT {
-                #[cfg(all(feature = "fp16kernels", target_arch = "aarch64"))]
-                SimdSupport::Neon => unsafe {
-                    kernel::l2_f16_neon(x.as_ptr(), y.as_ptr(), x.len() as u32)
-                },
-                #[cfg(all(
-                    feature = "fp16kernels",
-                    kernel_support = "avx512",
-                    target_arch = "x86_64"
-                ))]
-                SimdSupport::Avx512FP16 => unsafe {
-                    kernel::l2_f16_avx512(x.as_ptr(), y.as_ptr(), x.len() as u32)
-                },
-                #[cfg(all(feature = "fp16kernels", target_arch = "x86_64"))]
-                SimdSupport::Avx2 => unsafe {
-                    kernel::l2_f16_avx2(x.as_ptr(), y.as_ptr(), x.len() as u32)
-                },
-                #[cfg(all(feature = "fp16kernels", target_arch = "loongarch64"))]
-                SimdSupport::Lasx => unsafe {
-                    kernel::l2_f16_lasx(x.as_ptr(), y.as_ptr(), x.len() as u32)
-                },
-                #[cfg(all(feature = "fp16kernels", target_arch = "loongarch64"))]
-                SimdSupport::Lsx => unsafe {
-                    kernel::l2_f16_lsx(x.as_ptr(), y.as_ptr(), x.len() as u32)
-                },
-                _ => l2_scalar::<Self, f32, 16>(x, y),
-            }
+        match *SIMD_SUPPORT {
+            #[cfg(all(feature = "fp16kernels", target_arch = "aarch64"))]
+            SimdSupport::Neon => unsafe {
+                kernel::l2_f16_neon(x.as_ptr(), y.as_ptr(), x.len() as u32)
+            },
+            #[cfg(all(
+                feature = "fp16kernels",
+                kernel_support = "avx512",
+                target_arch = "x86_64"
+            ))]
+            SimdSupport::Avx512FP16 => unsafe {
+                kernel::l2_f16_avx512(x.as_ptr(), y.as_ptr(), x.len() as u32)
+            },
+            #[cfg(all(feature = "fp16kernels", target_arch = "x86_64"))]
+            SimdSupport::Avx2 => unsafe {
+                kernel::l2_f16_avx2(x.as_ptr(), y.as_ptr(), x.len() as u32)
+            },
+            #[cfg(all(feature = "fp16kernels", target_arch = "loongarch64"))]
+            SimdSupport::Lasx => unsafe {
+                kernel::l2_f16_lasx(x.as_ptr(), y.as_ptr(), x.len() as u32)
+            },
+            #[cfg(all(feature = "fp16kernels", target_arch = "loongarch64"))]
+            SimdSupport::Lsx => unsafe {
+                kernel::l2_f16_lsx(x.as_ptr(), y.as_ptr(), x.len() as u32)
+            },
+            _ => l2_scalar::<Self, f32, 16>(x, y),
         }
     }
 }
@@ -187,30 +173,16 @@ impl L2 for f16 {
 impl L2 for f32 {
     #[inline]
     fn l2(x: &[Self], y: &[Self]) -> f32 {
-        #[cfg(all(feature = "numkong", target_arch = "x86_64"))]
-        {
-            <Self as numkong::Euclidean>::sqeuclidean(x, y).unwrap_or(0.0) as Self
-        }
-        #[cfg(not(all(feature = "numkong", target_arch = "x86_64")))]
-        {
-            // 16 = 512 (avx512) / 8 bits / 4 (sizeof(f32))
-            // See https://github.com/lance-format/lance/pull/2450.
-            l2_scalar::<Self, Self, 16>(x, y)
-        }
+        // 16 = 512 (avx512) / 8 bits / 4 (sizeof(f32))
+        // See https://github.com/lance-format/lance/pull/2450.
+        l2_scalar::<Self, Self, 16>(x, y)
     }
 }
 
 impl L2 for f64 {
     #[inline]
     fn l2(x: &[Self], y: &[Self]) -> f32 {
-        #[cfg(all(feature = "numkong", target_arch = "x86_64"))]
-        {
-            <Self as numkong::Euclidean>::sqeuclidean(x, y).unwrap_or(0.0) as f32
-        }
-        #[cfg(not(all(feature = "numkong", target_arch = "x86_64")))]
-        {
-            l2_scalar::<Self, Self, 8>(x, y) as f32
-        }
+        l2_scalar::<Self, Self, 8>(x, y) as f32
     }
 }
 
