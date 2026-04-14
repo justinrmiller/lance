@@ -97,8 +97,8 @@ mod x86 {
         let mut i = 0usize;
 
         while i + 64 <= n {
-            let av = _mm512_loadu_si512(a.as_ptr().add(i) as *const i32);
-            let bv = _mm512_loadu_si512(b.as_ptr().add(i) as *const i32);
+            let av = _mm512_loadu_si512(a.as_ptr().add(i) as *const __m512i);
+            let bv = _mm512_loadu_si512(b.as_ptr().add(i) as *const __m512i);
 
             // |a - b| via saturating subtraction
             let abs_diff = _mm512_or_si512(_mm512_subs_epu8(av, bv), _mm512_subs_epu8(bv, av));

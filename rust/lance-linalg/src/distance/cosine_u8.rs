@@ -142,8 +142,8 @@ mod x86 {
         let mut i = 0usize;
 
         while i + 64 <= n {
-            let av = _mm512_loadu_si512(a.as_ptr().add(i) as *const i32);
-            let bv = _mm512_loadu_si512(b.as_ptr().add(i) as *const i32);
+            let av = _mm512_loadu_si512(a.as_ptr().add(i) as *const __m512i);
+            let bv = _mm512_loadu_si512(b.as_ptr().add(i) as *const __m512i);
 
             // Zero-extend u8→i16 via interleave with zeros.
             let a_lo = _mm512_unpacklo_epi8(av, zeros);
