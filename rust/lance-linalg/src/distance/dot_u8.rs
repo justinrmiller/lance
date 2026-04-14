@@ -9,10 +9,9 @@
 //! dot product plus precomputed per-vector scalar terms.
 //!
 //! Backends (selected at runtime, best available wins):
-//!   1. scalar        — portable reference, also used for tails
-//!   2. neon_dotprod  — UDOT u8×u8→u32 (ARMv8.2-A+dotprod), 16 elements/iter
-//!   3. avx2          — VPMADDWD on u16-widened halves, 32 elements/iter
-//!   4. avx512vnni    — VPDPBUSD with XOR-0x80 bias trick, 64 elements/iter
+//!   1. scalar     — portable reference, also used for tails
+//!   2. avx2       — VPMADDWD on u16-widened halves, 32 elements/iter
+//!   3. avx512vnni — VPDPBUSD with XOR-0x80 bias trick, 64 elements/iter
 //!
 //! ## The VNNI bias trick
 //!
@@ -37,67 +36,6 @@ pub fn dot_u8_scalar(a: &[u8], b: &[u8]) -> u32 {
         .zip(b.iter())
         .map(|(&x, &y)| x as u32 * y as u32)
         .sum()
-}
-
-#[cfg(target_arch = "aarch64")]
-mod aarch64 {
-    use std::arch::aarch64::*;
-    use std::arch::asm;
-
-    /// NEON dotprod path (Apple M1+, Graviton2+, Cortex-A76+).
-    /// Inline asm because `vdotq_u32` is not yet stable in std::arch.
-    pub unsafe fn dot_u8_neon_dotprod(a: &[u8], b: &[u8]) -> u32 {
-        debug_assert_eq!(a.len(), b.len());
-        let n = a.len();
-        let mut acc = vdupq_n_u32(0);
-        let mut i = 0usize;
-
-        while i + 16 <= n {
-            let av = vld1q_u8(a.as_ptr().add(i));
-            let bv = vld1q_u8(b.as_ptr().add(i));
-            asm!(
-                "udot {acc:v}.4s, {a:v}.16b, {b:v}.16b",
-                acc = inout(vreg) acc,
-                a = in(vreg) av,
-                b = in(vreg) bv,
-                options(pure, nomem, nostack),
-            );
-            i += 16;
-        }
-
-        let mut result = vaddvq_u32(acc);
-        while i < n {
-            result += a[i] as u32 * b[i] as u32;
-            i += 1;
-        }
-        result
-    }
-
-    /// Base NEON path: widening multiply u8→u16 then pairwise accumulate
-    /// to u32. Fallback when dotprod is not available.
-    pub unsafe fn dot_u8_neon(a: &[u8], b: &[u8]) -> u32 {
-        debug_assert_eq!(a.len(), b.len());
-        let n = a.len();
-        let mut acc = vdupq_n_u32(0);
-        let mut i = 0usize;
-
-        while i + 16 <= n {
-            let av = vld1q_u8(a.as_ptr().add(i));
-            let bv = vld1q_u8(b.as_ptr().add(i));
-            let prod_lo = vmull_u8(vget_low_u8(av), vget_low_u8(bv));
-            let prod_hi = vmull_u8(vget_high_u8(av), vget_high_u8(bv));
-            acc = vpadalq_u16(acc, prod_lo);
-            acc = vpadalq_u16(acc, prod_hi);
-            i += 16;
-        }
-
-        let mut result = vaddvq_u32(acc);
-        while i < n {
-            result += a[i] as u32 * b[i] as u32;
-            i += 1;
-        }
-        result
-    }
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -198,17 +136,6 @@ fn select_backend() -> DotU8Fn {
         }
     }
 
-    #[cfg(target_arch = "aarch64")]
-    {
-        return if std::arch::is_aarch64_feature_detected!("dotprod") {
-            |a, b| unsafe { aarch64::dot_u8_neon_dotprod(a, b) }
-        } else {
-            // Base NEON is always available on aarch64.
-            |a, b| unsafe { aarch64::dot_u8_neon(a, b) }
-        };
-    }
-
-    #[allow(unreachable_code)]
     dot_u8_scalar
 }
 
@@ -235,17 +162,6 @@ mod tests {
 
     fn check_all_backends(a: &[u8], b: &[u8], case: &str) {
         let reference = dot_u8_scalar(a, b);
-
-        #[cfg(target_arch = "aarch64")]
-        {
-            let got = unsafe { aarch64::dot_u8_neon(a, b) };
-            assert_eq!(got, reference, "neon [{case}] n={}", a.len());
-
-            if std::arch::is_aarch64_feature_detected!("dotprod") {
-                let got = unsafe { aarch64::dot_u8_neon_dotprod(a, b) };
-                assert_eq!(got, reference, "neon_dotprod [{case}] n={}", a.len());
-            }
-        }
 
         #[cfg(target_arch = "x86_64")]
         {
