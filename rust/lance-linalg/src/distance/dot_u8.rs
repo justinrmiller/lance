@@ -97,8 +97,8 @@ mod x86 {
         let mut i = 0usize;
 
         while i + 64 <= n {
-            let av = _mm512_loadu_si512(a.as_ptr().add(i) as *const i32);
-            let bv = _mm512_loadu_si512(b.as_ptr().add(i) as *const i32);
+            let av = _mm512_loadu_si512(a.as_ptr().add(i) as *const __m512i);
+            let bv = _mm512_loadu_si512(b.as_ptr().add(i) as *const __m512i);
             let b_biased = _mm512_xor_si512(bv, sign_flip);
             acc_dot = _mm512_dpbusd_epi32(acc_dot, av, b_biased);
             acc_suma = _mm512_add_epi64(acc_suma, _mm512_sad_epu8(av, zeros));
@@ -179,12 +179,7 @@ mod tests {
             }
         }
 
-        assert_eq!(
-            dot_u8(a, b),
-            reference,
-            "dispatch [{case}] n={}",
-            a.len()
-        );
+        assert_eq!(dot_u8(a, b), reference, "dispatch [{case}] n={}", a.len());
     }
 
     #[test]
