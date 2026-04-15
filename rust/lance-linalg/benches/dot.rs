@@ -115,8 +115,7 @@ fn bench_distance(c: &mut Criterion) {
             let num_vectors = 1024 * 1024 / dim; // ~1M elements total
             let mut rng = rand::rng();
             let key_u8: Vec<u8> = (0..dim).map(|_| rng.random()).collect();
-            let target_u8: Vec<u8> =
-                (0..num_vectors * dim).map(|_| rng.random()).collect();
+            let target_u8: Vec<u8> = (0..num_vectors * dim).map(|_| rng.random()).collect();
 
             c.bench_function(&format!("Dot(u8, scalar, dim={dim})"), |b| {
                 b.iter(|| {
