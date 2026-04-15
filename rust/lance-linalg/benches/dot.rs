@@ -122,7 +122,6 @@ fn bench_distance(c: &mut Criterion) {
     });
 
     run_bench::<Float64Type>(c);
-
 }
 
 fn bench_time() -> Duration {

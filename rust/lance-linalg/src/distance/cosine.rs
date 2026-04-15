@@ -65,7 +65,12 @@ pub trait Cosine: Dot + Normalize {
     }
 }
 
-impl Cosine for u8 {}
+impl Cosine for u8 {
+    #[inline]
+    fn cosine(x: &[Self], other: &[Self]) -> f32 {
+        super::cosine_u8::cosine_u8(x, other)
+    }
+}
 
 #[cfg(feature = "fp16kernels")]
 mod bf16_kernel {
@@ -75,12 +80,8 @@ mod bf16_kernel {
     // a version of this file for each SIMD level with different suffixes.
     unsafe extern "C" {
         #[cfg(target_arch = "aarch64")]
-        pub fn cosine_bf16_neon(
-            x: *const bf16,
-            x_norm: f32,
-            y: *const bf16,
-            dimension: u32,
-        ) -> f32;
+        pub fn cosine_bf16_neon(x: *const bf16, x_norm: f32, y: *const bf16, dimension: u32)
+        -> f32;
         #[cfg(all(kernel_support = "avx512", target_arch = "x86_64"))]
         pub fn cosine_bf16_avx512(
             x: *const bf16,
@@ -89,26 +90,13 @@ mod bf16_kernel {
             dimension: u32,
         ) -> f32;
         #[cfg(target_arch = "x86_64")]
-        pub fn cosine_bf16_avx2(
-            x: *const bf16,
-            x_norm: f32,
-            y: *const bf16,
-            dimension: u32,
-        ) -> f32;
+        pub fn cosine_bf16_avx2(x: *const bf16, x_norm: f32, y: *const bf16, dimension: u32)
+        -> f32;
         #[cfg(target_arch = "loongarch64")]
-        pub fn cosine_bf16_lsx(
-            x: *const bf16,
-            x_norm: f32,
-            y: *const bf16,
-            dimension: u32,
-        ) -> f32;
+        pub fn cosine_bf16_lsx(x: *const bf16, x_norm: f32, y: *const bf16, dimension: u32) -> f32;
         #[cfg(target_arch = "loongarch64")]
-        pub fn cosine_bf16_lasx(
-            x: *const bf16,
-            x_norm: f32,
-            y: *const bf16,
-            dimension: u32,
-        ) -> f32;
+        pub fn cosine_bf16_lasx(x: *const bf16, x_norm: f32, y: *const bf16, dimension: u32)
+        -> f32;
     }
 }
 
