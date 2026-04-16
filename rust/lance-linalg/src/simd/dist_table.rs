@@ -75,7 +75,12 @@ pub fn sum_4bit_dist_table(
 
 #[inline]
 #[allow(unused)]
-fn sum_4bit_dist_table_scalar(code_len: usize, codes: &[u8], dist_table: &[u8], dists: &mut [u16]) {
+pub fn sum_4bit_dist_table_scalar(
+    code_len: usize,
+    codes: &[u8],
+    dist_table: &[u8],
+    dists: &mut [u16],
+) {
     for (vec_block_idx, blocks) in codes.chunks_exact(BATCH_SIZE * code_len).enumerate() {
         for (sub_vec_idx, block) in blocks.chunks_exact(BATCH_SIZE).enumerate() {
             let current_dist_table = &dist_table[sub_vec_idx * 2 * 16..(sub_vec_idx * 2 + 1) * 16];
@@ -296,5 +301,84 @@ mod tests {
 
         // so the distance is 2 * (dist_table[0x6] + dist_table[0xb + 16]) = 2*(7 + 12) = 38
         assert_eq!(dists[1], 38);
+    }
+
+    /// Test that the SIMD path (NEON on ARM, AVX2 on x86) produces identical
+    /// results to the scalar reference across a range of dimensions, including
+    /// very large ones (up to DIM=65536).
+    ///
+    /// Note: dist_table values are capped to avoid u16 overflow, matching
+    /// production behavior where values are quantized to a small range.
+    /// (The scalar path uses saturating_add while SIMD uses wrapping add,
+    /// so they diverge on overflow — but overflow never occurs with real
+    /// quantized data.)
+    #[test]
+    fn test_simd_matches_scalar_varied_dimensions() {
+        use rand::{Rng, SeedableRng};
+        let mut rng = rand::rngs::StdRng::seed_from_u64(42);
+
+        // code_len = dim / 8 for 1-bit quantization; we test various code_lens
+        // directly since that's what the function sees.
+        // code_len=16 → DIM=128, code_len=192 → DIM=1536,
+        // code_len=512 → DIM=4096, code_len=8192 → DIM=65536
+        for code_len in [2, 16, 96, 192, 512, 1024, 8192] {
+            let n = BATCH_SIZE; // 32 vectors per batch
+
+            // Each code byte produces 2 lookups; cap values so
+            // 2 * code_len * max_val < u16::MAX.
+            let max_val = (u16::MAX as usize / (2 * code_len)).min(255) as u8;
+
+            let codes: Vec<u8> = (0..n * code_len).map(|_| rng.random::<u8>()).collect();
+            let dist_table: Vec<u8> = (0..BATCH_SIZE * code_len)
+                .map(|_| rng.random_range(0..=max_val))
+                .collect();
+
+            let mut expected = vec![0u16; n];
+            sum_4bit_dist_table_scalar(code_len, &codes, &dist_table, &mut expected);
+
+            let mut actual = vec![0u16; n];
+            sum_4bit_dist_table(n, code_len, &codes, &dist_table, &mut actual);
+
+            assert_eq!(
+                actual,
+                expected,
+                "SIMD and scalar mismatch for code_len={} (DIM={})",
+                code_len,
+                code_len * 8,
+            );
+        }
+    }
+
+    /// Test with multiple batches to verify accumulation across batch boundaries.
+    #[test]
+    fn test_simd_matches_scalar_multi_batch() {
+        use rand::{Rng, SeedableRng};
+        let mut rng = rand::rngs::StdRng::seed_from_u64(123);
+
+        for code_len in [16, 192, 1024] {
+            let n = BATCH_SIZE * 10; // 320 vectors = 10 batches
+
+            let max_val = (u16::MAX as usize / (2 * code_len)).min(255) as u8;
+
+            let codes: Vec<u8> = (0..n * code_len).map(|_| rng.random::<u8>()).collect();
+            let dist_table: Vec<u8> = (0..BATCH_SIZE * code_len)
+                .map(|_| rng.random_range(0..=max_val))
+                .collect();
+
+            let mut expected = vec![0u16; n];
+            sum_4bit_dist_table_scalar(code_len, &codes, &dist_table, &mut expected);
+
+            let mut actual = vec![0u16; n];
+            sum_4bit_dist_table(n, code_len, &codes, &dist_table, &mut actual);
+
+            assert_eq!(
+                actual,
+                expected,
+                "SIMD and scalar mismatch for multi-batch code_len={} (DIM={}, n={})",
+                code_len,
+                code_len * 8,
+                n,
+            );
+        }
     }
 }
