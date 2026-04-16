@@ -15,6 +15,7 @@ use rand::Rng;
 use pprof::criterion::{Output, PProfProfiler};
 
 use lance_arrow::{ArrowFloatType, FloatArray};
+use lance_linalg::distance::l2::L2Prepared;
 use lance_linalg::distance::{L2, l2::l2, l2_distance_batch, l2_distance_uint_scalar};
 use lance_testing::datagen::generate_random_array_with_seed;
 
@@ -127,6 +128,43 @@ fn l2_distance_uint_scalar_auto_vectorized(key: &[u8], target: &[u8]) -> f32 {
     sum as f32
 }
 
+fn bench_l2_prepared(c: &mut Criterion) {
+    // PQ-typical: 256 centroids × 16 dims (16 KB, fits L1 cache)
+    let dim = 16;
+    let num_targets = 256;
+    let num_queries = 10_000;
+
+    let mut rng = rand::rng();
+    let targets: Vec<f32> = repeat_with(|| rng.random::<f32>())
+        .take(num_targets * dim)
+        .collect();
+    let queries: Vec<f32> = repeat_with(|| rng.random::<f32>())
+        .take(num_queries * dim)
+        .collect();
+    let prepared = L2Prepared::new(&targets, dim);
+
+    c.bench_function("L2Prepared(distances, 256×16)", |b| {
+        let mut buf = vec![0.0f32; num_targets];
+        b.iter(|| {
+            for query in queries.chunks_exact(dim) {
+                prepared.distances_into(black_box(query), &mut buf);
+            }
+            black_box(&buf);
+        });
+    });
+
+    c.bench_function("L2Prepared(nearest, 256×16)", |b| {
+        let mut buf = vec![0.0f32; num_targets];
+        b.iter(|| {
+            let mut total = 0u32;
+            for query in queries.chunks_exact(dim) {
+                total = total.wrapping_add(prepared.nearest_into(query, &mut buf).unwrap_or(0));
+            }
+            black_box(total);
+        });
+    });
+}
+
 fn bench_uint_distance(c: &mut Criterion) {
     let mut rng = rand::rng();
     let key = repeat_with(|| rng.random::<u8>())
@@ -164,12 +202,12 @@ criterion_group!(
     name=benches;
     config = Criterion::default().significance_level(0.1).sample_size(10)
         .with_profiler(PProfProfiler::new(100, Output::Flamegraph(None)));
-    targets = bench_distance, bench_small_distance, bench_uint_distance);
+    targets = bench_distance, bench_small_distance, bench_uint_distance, bench_l2_prepared);
 
 // Non-linux version does not support pprof.
 #[cfg(not(target_os = "linux"))]
 criterion_group!(
     name=benches;
     config = Criterion::default().significance_level(0.1).sample_size(10);
-    targets = bench_distance, bench_small_distance, bench_uint_distance);
+    targets = bench_distance, bench_small_distance, bench_uint_distance, bench_l2_prepared);
 criterion_main!(benches);

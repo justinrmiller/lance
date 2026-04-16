@@ -187,6 +187,53 @@ fn accumulate_l2_dimension(q: f32, row: &[f32], result: &mut [f32]) {
     }
 }
 
+/// SIMD-accelerated argmin over an f32 slice.
+///
+/// Scans in chunks of 8 using f32x8 to find the lane-wise minimum,
+/// then performs a scalar pass to find the index of the global minimum.
+fn argmin_f32_simd(values: &[f32]) -> Option<u32> {
+    use crate::simd::SIMD;
+    use crate::simd::f32::f32x8;
+
+    if values.is_empty() {
+        return None;
+    }
+
+    let len = values.len();
+    let chunks = len / 8;
+    let mut global_min = f32x8::splat(f32::INFINITY);
+
+    for i in 0..chunks {
+        let v = unsafe { f32x8::load_unaligned(values.as_ptr().add(i * 8)) };
+        global_min = global_min.min(&v);
+    }
+
+    // Reduce the 8-wide min to a scalar
+    let mut min_val = global_min.reduce_min();
+
+    // Handle the tail
+    for &v in &values[chunks * 8..] {
+        if v < min_val {
+            min_val = v;
+        }
+    }
+
+    // Now find the first index that matches min_val.
+    // This is a scalar scan but over a known-small search space
+    // since we already know the minimum value.
+    if min_val.is_infinite() {
+        return None;
+    }
+
+    for (idx, &v) in values.iter().enumerate() {
+        if v <= min_val {
+            return Some(idx as u32);
+        }
+    }
+
+    None
+}
+
 /// Pre-transposed target vectors for batched L2 distance computation.
 ///
 /// Stores targets in SoA layout `[dimension][num_targets]` so the inner
@@ -252,7 +299,7 @@ impl L2Prepared {
     /// `buf` must have length `num_targets`.
     pub fn nearest_into(&self, query: &[f32], buf: &mut [f32]) -> Option<u32> {
         self.distances_into(query, buf);
-        crate::kernels::argmin_value_float(buf.iter().copied()).map(|(idx, _)| idx)
+        argmin_f32_simd(buf)
     }
 
     /// Return the index of the nearest target to `query`.
