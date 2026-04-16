@@ -16,6 +16,7 @@ use lance_arrow::FixedSizeListArrayExt;
 use lance_core::{Error, Result};
 use lance_linalg::distance::DistanceType;
 use lance_linalg::distance::{Dot, L2, Normalize};
+use rayon::prelude::*;
 
 use super::ProductQuantizer;
 use super::utils::divide_to_subvectors;
@@ -100,13 +101,24 @@ impl PQBuildParams {
             "PQ code does not support cosine"
         );
 
-        let sub_vectors = divide_to_subvectors::<T>(data, self.num_sub_vectors)?;
         let num_centroids = 2_usize.pow(self.num_bits as u32);
         let dimension = data.value_length() as usize;
         let sub_vector_dimension = dimension / self.num_sub_vectors;
 
+        // Sample before dividing into sub-vectors. train_kmeans internally
+        // samples to `sample_rate * num_centroids` vectors anyway, so
+        // dividing the full dataset first wastes O(N * D) memory copying
+        // data that is immediately discarded.
+        let sample_size = self.sample_rate * num_centroids;
+        let training_data = if data.len() > sample_size {
+            data.slice(0, sample_size)
+        } else {
+            data.clone()
+        };
+        let sub_vectors = divide_to_subvectors::<T>(&training_data, self.num_sub_vectors)?;
+
         let d = sub_vectors
-            .into_iter()
+            .into_par_iter()
             .enumerate()
             .map(|(sub_vec_idx, sub_vec)| {
                 let params = KMeansParams::new(
