@@ -105,11 +105,12 @@ impl PQBuildParams {
         let dimension = data.value_length() as usize;
         let sub_vector_dimension = dimension / self.num_sub_vectors;
 
-        // Sample before dividing into sub-vectors. train_kmeans internally
-        // samples to `sample_rate * num_centroids` vectors anyway, so
-        // dividing the full dataset first wastes O(N * D) memory copying
-        // data that is immediately discarded.
-        let sample_size = self.sample_rate * num_centroids;
+        // Bound sub-vector division to the training-set size. The main
+        // indexing path pre-samples via `PQBuildParams::sample_size()` at
+        // `lance/src/index/vector/builder.rs`, so this branch is a no-op
+        // there. It matters for callers that pass full data directly —
+        // benches and the memtable flush path.
+        let sample_size = self.sample_size();
         let training_data = if data.len() > sample_size {
             data.slice(0, sample_size)
         } else {

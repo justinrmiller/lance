@@ -3,13 +3,9 @@
 
 //! Benchmark for PQ codebook training (build) time and memory.
 
+use arrow_array::FixedSizeListArray;
 use arrow_array::types::Float32Type;
 use criterion::{Criterion, criterion_group, criterion_main};
-
-#[cfg(target_os = "linux")]
-use pprof::criterion::{Output, PProfProfiler};
-
-use arrow_array::FixedSizeListArray;
 use lance_arrow::FixedSizeListArrayExt;
 use lance_index::vector::pq::builder::PQBuildParams;
 use lance_linalg::distance::DistanceType;
@@ -48,13 +44,6 @@ fn bench_pq_build(c: &mut Criterion) {
     );
 }
 
-#[cfg(target_os = "linux")]
-criterion_group!(
-    name=benches;
-    config = Criterion::default().significance_level(0.1).sample_size(10);
-    targets = bench_pq_build);
-
-#[cfg(not(target_os = "linux"))]
 criterion_group!(
     name=benches;
     config = Criterion::default().significance_level(0.1).sample_size(10);
