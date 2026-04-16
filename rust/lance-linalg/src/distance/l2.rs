@@ -191,6 +191,11 @@ fn accumulate_l2_dimension(q: f32, row: &[f32], result: &mut [f32]) {
 ///
 /// Scans in chunks of 8 using f32x8 to find the lane-wise minimum,
 /// then performs a scalar pass to find the index of the global minimum.
+///
+/// Note: this assumes inputs do not contain NaN. The `_mm256_min_ps` / `vminq_f32`
+/// intrinsics have platform-specific NaN propagation behavior that differs from
+/// the scalar `argmin_value_float`. This is safe for L2Prepared because squared
+/// differences are always non-negative finite values.
 fn argmin_f32_simd(values: &[f32]) -> Option<u32> {
     use crate::simd::SIMD;
     use crate::simd::f32::f32x8;
@@ -690,5 +695,51 @@ mod tests {
 
         assert_relative_eq!(d1[0], 0.0); // q1 == target[0]
         assert_relative_eq!(d2[1], 0.0); // q2 == target[1]
+    }
+
+    #[test]
+    fn test_argmin_f32_simd_matches_scalar() {
+        use crate::kernels::argmin_value_float;
+
+        // Basic case
+        let vals = vec![3.0f32, 1.0, 4.0, 1.5, 9.2, 0.5, 6.5, 3.5, 8.0, 0.1];
+        let expected = argmin_value_float(vals.iter().copied()).map(|(idx, _)| idx);
+        assert_eq!(super::argmin_f32_simd(&vals), expected);
+
+        // Minimum in tail (past 8-element boundary)
+        let vals = vec![5.0; 10];
+        let mut v = vals;
+        v[9] = 0.1;
+        let expected = argmin_value_float(v.iter().copied()).map(|(idx, _)| idx);
+        assert_eq!(super::argmin_f32_simd(&v), expected);
+
+        // Exactly 8 elements
+        let vals = vec![8.0, 7.0, 6.0, 5.0, 4.0, 3.0, 2.0, 1.0];
+        let expected = argmin_value_float(vals.iter().copied()).map(|(idx, _)| idx);
+        assert_eq!(super::argmin_f32_simd(&vals), expected);
+
+        // Less than 8 elements
+        let vals = vec![3.0, 1.0, 2.0];
+        let expected = argmin_value_float(vals.iter().copied()).map(|(idx, _)| idx);
+        assert_eq!(super::argmin_f32_simd(&vals), expected);
+
+        // Empty
+        assert_eq!(super::argmin_f32_simd(&[]), None);
+
+        // Single element
+        assert_eq!(super::argmin_f32_simd(&[42.0]), Some(0));
+
+        // Ties: should return first occurrence
+        let vals = vec![2.0, 1.0, 3.0, 1.0, 4.0, 1.0, 5.0, 1.0, 6.0, 1.0];
+        let expected = argmin_value_float(vals.iter().copied()).map(|(idx, _)| idx);
+        assert_eq!(super::argmin_f32_simd(&vals), expected);
+        assert_eq!(super::argmin_f32_simd(&vals), Some(1)); // first occurrence
+
+        // 256 elements (PQ-typical)
+        let mut vals: Vec<f32> = (0..256).map(|i| (i as f32) * 0.1 + 1.0).collect();
+        vals[137] = 0.001;
+        let expected = argmin_value_float(vals.iter().copied()).map(|(idx, _)| idx);
+        assert_eq!(super::argmin_f32_simd(&vals), expected);
+        assert_eq!(super::argmin_f32_simd(&vals), Some(137));
     }
 }
