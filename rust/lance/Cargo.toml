@@ -200,5 +200,9 @@ harness = false
 name = "mem_wal_read"
 harness = false
 
+[[bench]]
+name = "index_stats"
+harness = false
+
 [lints]
 workspace = true
